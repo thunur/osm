@@ -561,22 +561,31 @@ func (ch *ContractionHierarchies) computeNodeContractionParallel(nodes []graph.N
 
 	jobs := make(chan graph.NodeId, numJobs)
 	results := make(chan *ContractionResult, numJobs)
+	errChan := make(chan error, numWorkers) // 添加错误通道
+	var wg sync.WaitGroup
 
 	// create workers
 	for i := 0; i < numWorkers; i++ {
-		go func(worker *UniversalDijkstra) {
+		wg.Add(1)
+		worker := ch.contractionWorkers[i] // 在循环内获取 worker
+		go func(w *UniversalDijkstra, workerID int) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					errChan <- fmt.Errorf("worker %d panic: %v", workerID, r)
+				}
+			}()
+
 			for nodeId := range jobs {
 				if ch.debugLevel >= 3 {
-					log.Printf("Contract Node %7v\n", nodeId)
+					log.Printf("Worker %d processing Node %7v\n", workerID, nodeId)
 				}
 
 				if ch.precomputedResults != nil && ch.precomputedResults[nodeId] != nil {
-					// use cached result
 					results <- ch.precomputedResults[nodeId]
 					continue
 				}
 
-				// make a "hard" copy to handle different cases in the different goroutines
 				ignoreNodes := make([]bool, ch.g.NodeCount())
 				copy(ignoreNodes, ch.contractedNodes.Get())
 
@@ -588,27 +597,55 @@ func (ch *ContractionHierarchies) computeNodeContractionParallel(nodes []graph.N
 					ignoreNodes[nodeId] = true
 				}
 
-				// Recalculate shortcuts, incident edges and processed neighbors
-				cr := ch.computeNodeContraction(nodeId, ignoreNodes, worker)
-
+				cr := ch.computeNodeContraction(nodeId, ignoreNodes, w)
 				results <- cr
 			}
-		}(ch.contractionWorkers[i])
+		}(worker, i) // 正确传递 worker 和 worker ID
 	}
 
-	// fill jobs
-	for i := 0; i < numJobs; i++ {
-		nodeId := nodes[i]
-		jobs <- nodeId
-	}
-	close(jobs)
+	// 发送任务
+	go func() {
+		for _, nodeId := range nodes {
+			jobs <- nodeId
+		}
+		close(jobs)
+	}()
 
+	// 等待所有 worker 完成
+	go func() {
+		wg.Wait()
+		close(results)
+		close(errChan)
+	}()
+
+	// 收集结果
+	resultMap := make(map[int]*ContractionResult, numJobs)
+	for {
+		select {
+		case result, ok := <-results:
+			if !ok {
+				// results 通道已关闭，所有结果都已收集
+				goto DONE
+			}
+			resultMap[result.nodeId] = result
+			if ch.precomputedResults != nil {
+				ch.precomputedResults[result.nodeId] = result
+			}
+		case err := <-errChan:
+			if err != nil {
+				log.Printf("Worker error: %v", err)
+			}
+		}
+	}
+
+DONE:
+	// 按照原始节点顺序重建结果数组
 	contractionResults := make([]*ContractionResult, numJobs)
-	for i := 0; i < numJobs; i++ {
-		result := <-results
-		contractionResults[i] = result
-		if ch.precomputedResults != nil {
-			ch.precomputedResults[result.nodeId] = result
+	for i, nodeId := range nodes {
+		if result, ok := resultMap[nodeId]; ok {
+			contractionResults[i] = result
+		} else {
+			log.Printf("Warning: missing result for node %d", nodeId)
 		}
 	}
 
