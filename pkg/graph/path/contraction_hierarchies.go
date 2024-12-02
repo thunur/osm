@@ -124,10 +124,17 @@ func NewContractionHierarchies(g graph.Graph, dijkstra *UniversalDijkstra, optio
 		cw = append(cw, worker)
 	}
 
-	ch := &ContractionHierarchies{g: g, dijkstra: dijkstra, contractionWorkers: cw, contractionLevelLimit: options.ContractionLimit, graphFilename: "contracted_graph.fmi", shortcutsFilename: "shortcuts.txt", nodeOrderingFilename: "node_ordering.txt"}
-	if options.UseCache {
-		ch.precomputedResults = make([]*ContractionResult, ch.g.NodeCount())
+	ch := &ContractionHierarchies{
+		g:                     g,
+		dijkstra:              dijkstra,
+		contractionWorkers:    cw,
+		contractionLevelLimit: options.ContractionLimit,
+		graphFilename:         "contracted_graph.fmi",
+		shortcutsFilename:     "shortcuts.txt",
+		nodeOrderingFilename:  "node_ordering.txt",
+		precomputedResults:    make([]*ContractionResult, g.NodeCount()),
 	}
+
 	ch.contractionProgress.milestoneFilename = "milestones.txt"
 	return ch
 }
